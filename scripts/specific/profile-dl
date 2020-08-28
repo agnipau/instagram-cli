@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+
+if [[ $# -eq 0 ]]; then
+  printf '%s\n' "Usage: ./profile-dl <instagram_usernames>"
+  exit 1
+fi
+
+self_path="$(cd "$(dirname "$0")" >/dev/null 2>&1; pwd -P)"
+scripts_path="${self_path}/.."
+original_dir="${PWD}"
+
+download_user() {
+  cd "${original_dir}" || exit 1
+
+  profile_data="$(
+    cd "${scripts_path}" || exit 1
+    cargo r --release -- dl-profile "$1" 2>/dev/null
+  )"
+  if [[ -z "${profile_data}" ]]; then
+    printf '%s\n' "No user named \`$1\`"
+    return 1
+  fi
+
+  mkdir -p "$1"
+  cd "$1" || exit 1
+
+  printf '%s\n' "Downloading \`$1\` posts"
+  fx '.posts.map(x => x.media_urls).flat().join("\n")' <<<"${profile_data}" \
+      | "${scripts_path}/generic/batch-dl"
+
+  mkdir -p stories
+  cd stories || exit 1
+  printf '\n%s\n' "Downloading \`$1\` stories"
+  (
+    cd "${scripts_path}" || exit 1
+    cargo r --release -- stories "$1" 2>/dev/null \
+      | fx '.map(x => x.display_url).join("\n")'
+  ) | "${scripts_path}/generic/batch-dl"
+  cd ..
+
+  mkdir -p highlights
+  cd highlights || exit 1
+  for id in $(
+    cd "${scripts_path}" || exit 1
+    cargo r --release -- show-highlights "$1" 2>/dev/null \
+      | fx '.map(x => x.id).join("\n")'
+  ); do
+      mkdir -p "${id}"
+      cd "${id}" || exit 1
+      printf '\n%s\n' "Downloading \`$1\` highlights (${id})"
+      (
+        cd "${scripts_path}" || exit 1
+        cargo r --release -- dl-highlight "${id}" 2>/dev/null \
+          | fx '.map(x => x.media_url).join("\n")'
+      ) | "${scripts_path}/generic/batch-dl"
+      cd ..
+  done
+}
+
+for username in "$@"; do
+  download_user "${username}"
+  printf '\n'
+done
+
